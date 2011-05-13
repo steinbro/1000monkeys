@@ -1,0 +1,85 @@
+CMUDICT=cmudict
+ANTHOLOGY=dickinson
+
+RHYMEDB=rhymedb.txt
+ANALYZED=analysis.txt
+COUPLETS=couplets.txt
+POEM=poem.txt
+
+SJAR=$(shell ls /usr/lib/hadoop/contrib/streaming/hadoop-streaming-*.jar)
+CWD=$(shell pwd)
+
+MONKEYS=10000
+
+.PHONY: rhyming-dictionary anthology-analysis couplets couplet-rankings
+
+rhyming-dictionary:
+	- hadoop fs -rmr cmudict* rhymedb*
+	rm -rf $(RHYMEDB)
+	hadoop fs -copyFromLocal $(CMUDICT) cmudict
+	hadoop jar $(SJAR) \
+	  -mapper $(CWD)/rhyme/map.rb \
+	  -reducer $(CWD)/rhyme/reduce.rb \
+	  -input cmudict \
+	  -output rhymedb \
+	  -file $(CWD)/rhyme/map.rb \
+	  -file $(CWD)/rhyme/reduce.rb \
+	  -file $(CWD)/lib.rb
+	hadoop fs -copyToLocal rhymedb $(RHYMEDB).dir
+	cp $(RHYMEDB).dir/part-00000 $(RHYMEDB)
+	rm -rf $(RHYMEDB).dir
+
+anthology-analysis:
+	- hadoop fs -rmr anthology* analyzed*
+	rm -rf $(ANALYZED)
+	hadoop fs -copyFromLocal $(ANTHOLOGY) anthology
+	hadoop jar $(SJAR) \
+	  -mapper $(CWD)/read/map.rb \
+	  -reducer $(CWD)/read/reduce.rb \
+	  -input anthology \
+	  -output analyzed \
+	  -file $(CWD)/read/map.rb \
+	  -file $(CWD)/read/reduce.rb \
+	  -file $(CWD)/lib.rb
+	hadoop fs -copyToLocal analyzed $(ANALYZED).dir
+	cp $(ANALYZED).dir/part-00000 $(ANALYZED)
+	rm -rf $(ANALYZED).dir
+
+couplets:
+	- hadoop fs -rmr empty* couplets*
+	ruby -e "$(MONKEYS).times { puts }" > empty
+	hadoop fs -copyFromLocal empty empty
+	hadoop jar $(SJAR) \
+	  -mapper "$(CWD)/write/map.rb rhymedb.txt analysis.txt" \
+	  -reducer $(CWD)/write/reduce.rb \
+	  -input empty \
+	  -output couplets \
+	  -file $(CWD)/write/map.rb \
+	  -file $(CWD)/write/reduce.rb \
+	  -file $(CWD)/lib.rb \
+	  -file $(CWD)/$(RHYMEDB) \
+	  -file $(CWD)/$(ANALYZED)
+	rm empty
+
+couplet-rankings:
+	- hadoop fs -rmr poem*
+	rm -rf $(POEM)
+	hadoop jar $(SJAR) \
+	  -mapper "$(CWD)/judge/map.rb rhymedb.txt" \
+	  -reducer $(CWD)/judge/reduce.rb \
+	  -input couplets \
+	  -output poem \
+	  -file $(CWD)/judge/map.rb \
+	  -file $(CWD)/judge/reduce.rb \
+	  -file $(CWD)/lib.rb \
+	  -file $(CWD)/$(RHYMEDB)
+	hadoop fs -copyToLocal poem $(POEM)
+	cat $(POEM)/part*
+
+clean:
+	rm -f $(RHYMEDB) $(ANALYZED) $(COUPLETS) $(POEM)
+
+poem: couplets couplet-rankings
+
+all: rhyming-dictionary anthology-analysis couplets couplet-rankings
+
